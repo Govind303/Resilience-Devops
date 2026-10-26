@@ -6,7 +6,9 @@
 //                      'azure-devops-pat' (secret text, Azure DevOps personal access token)
 // Optional global env vars: ALERT_WEBHOOK_URL, AZDO_ORG, AZDO_PROJECT, AZDO_PIPELINE_ID
 pipeline {
-    agent any
+    agent {
+        label 'wsl-linux'
+    }
 
     options {
         timestamps()
