@@ -1,0 +1,17 @@
+# Managed by Ansible. Public traffic goes to whichever slot active_upstream.conf points at.
+upstream resilienceops_active {
+    include {{ app_root }}/nginx/active_upstream.conf;
+}
+
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+
+    location / {
+        proxy_pass http://resilienceops_active;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_connect_timeout 2s;
+        proxy_read_timeout 5s;
+    }
+}

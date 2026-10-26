@@ -1,0 +1,33 @@
+# Chaos experiment: cut the app off from its downstream quote service.
+# Expected resilient behaviour: the app keeps answering with cached quotes (graceful degradation),
+# /health reports DEGRADED, and it returns to UP once the network is back.
+- name: "Chaos: network failure to the downstream dependency"
+  hosts: staging
+  become: true
+  tasks:
+    - name: Drop traffic to the dependency, then always restore it
+      block:
+        - name: Insert DROP rule for port {{ downstream_port }}
+          ansible.builtin.iptables:
+            chain: OUTPUT
+            out_interface: lo
+            protocol: tcp
+            destination_port: "{{ downstream_port }}"
+            jump: DROP
+            action: insert
+            comment: resilienceops-chaos
+
+        - name: Keep the network broken for {{ chaos_duration }} seconds
+          ansible.builtin.pause:
+            seconds: "{{ chaos_duration }}"
+
+      always:
+        - name: Remove the DROP rule
+          ansible.builtin.iptables:
+            chain: OUTPUT
+            out_interface: lo
+            protocol: tcp
+            destination_port: "{{ downstream_port }}"
+            jump: DROP
+            comment: resilienceops-chaos
+            state: absent

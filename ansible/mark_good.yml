@@ -1,0 +1,18 @@
+# Run after the chaos gate passes: remembers this build as the one to roll back to.
+- name: Mark the staging build as known-good
+  hosts: staging
+  become: true
+  tasks:
+    - name: Keep a copy of the jar that passed the gate
+      ansible.builtin.copy:
+        src: "{{ app_root }}/staging/app.jar"
+        dest: "{{ app_root }}/staging/last-good.jar"
+        remote_src: true
+        owner: "{{ app_user }}"
+        mode: "0644"
+
+    - name: Record its version
+      ansible.builtin.copy:
+        content: "{{ app_version }}\n"
+        dest: "{{ app_root }}/staging/last-good.version"
+        mode: "0644"

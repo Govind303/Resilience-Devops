@@ -1,0 +1,101 @@
+# Blue-green release on the production VM.
+# The new version goes to the idle slot; nginx is switched to it only after it passes health and
+# smoke checks. The old slot keeps running, so rollback is a single nginx switch.
+- name: Blue-green deploy to production
+  hosts: production
+  become: true
+  tasks:
+    - name: Make sure the nginx config directory exists
+      ansible.builtin.file:
+        path: "{{ app_root }}/nginx"
+        state: directory
+        mode: "0755"
+
+    - name: Read the active slot
+      ansible.builtin.slurp:
+        src: "{{ app_root }}/active_color"
+      register: active_file
+      failed_when: false
+
+    - name: Choose the idle slot as the target
+      ansible.builtin.set_fact:
+        active_color: "{{ (active_file.content | default('') | b64decode | trim) or 'none' }}"
+        target_color: "{{ 'green' if (active_file.content | default('') | b64decode | trim) == 'blue' else 'blue' }}"
+
+    - name: Show the plan
+      ansible.builtin.debug:
+        msg: "Active slot: {{ active_color }}. Deploying {{ app_version }} to {{ target_color }}."
+
+    - name: Deploy, verify, then switch traffic
+      block:
+        - name: Deploy to the idle slot
+          ansible.builtin.include_tasks: tasks/deploy_instance.yml
+          vars:
+            instance_name: "{{ target_color }}"
+            instance_port: "{{ slot_ports[target_color] }}"
+
+        - name: Smoke-test the idle slot before it receives traffic
+          ansible.builtin.uri:
+            url: "http://127.0.0.1:{{ slot_ports[target_color] }}/api/quote"
+            return_content: true
+          register: smoke
+          failed_when: smoke.status != 200 or 'quote' not in smoke.json
+
+        - name: Point nginx at the new slot
+          ansible.builtin.template:
+            src: active_upstream.conf.j2
+            dest: "{{ app_root }}/nginx/active_upstream.conf"
+            mode: "0644"
+          vars:
+            switch_to_color: "{{ target_color }}"
+
+        - name: Install the nginx site
+          ansible.builtin.template:
+            src: nginx-site.conf.j2
+            dest: /etc/nginx/sites-available/resilienceops
+            mode: "0644"
+
+        - name: Enable the site
+          ansible.builtin.file:
+            src: /etc/nginx/sites-available/resilienceops
+            dest: /etc/nginx/sites-enabled/resilienceops
+            state: link
+
+        - name: Disable the default nginx site
+          ansible.builtin.file:
+            path: /etc/nginx/sites-enabled/default
+            state: absent
+
+        - name: Validate nginx configuration
+          ansible.builtin.command: nginx -t
+          changed_when: false
+
+        - name: Reload nginx (traffic switches with no dropped connections)
+          ansible.builtin.systemd:
+            name: nginx
+            state: reloaded
+            enabled: true
+
+        - name: Record the new active slot
+          ansible.builtin.copy:
+            content: "{{ target_color }}\n"
+            dest: "{{ app_root }}/active_color"
+            mode: "0644"
+
+        - name: Record the previous slot for rollback
+          ansible.builtin.copy:
+            content: "{{ active_color }}\n"
+            dest: "{{ app_root }}/previous_color"
+            mode: "0644"
+          when: active_color != 'none'
+
+      rescue:
+        - name: Stop the broken slot (traffic never left {{ active_color }})
+          ansible.builtin.systemd:
+            name: "resilienceops@{{ target_color }}"
+            state: stopped
+          failed_when: false
+
+        - name: Fail the release
+          ansible.builtin.fail:
+            msg: "Version {{ app_version }} failed checks in slot {{ target_color }}. Production traffic stays on {{ active_color }}."

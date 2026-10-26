@@ -1,0 +1,9 @@
+# Production: the Azure VM that runs the blue and green slots behind nginx.
+# Azure Pipelines sets PROD_HOST and PROD_USER from the resilienceops-production variable group.
+all:
+  children:
+    production:
+      hosts:
+        prod-vm:
+          ansible_host: "{{ lookup('env', 'PROD_HOST') }}"
+          ansible_user: "{{ lookup('env', 'PROD_USER') | default('azureuser', true) }}"

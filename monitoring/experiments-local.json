@@ -1,0 +1,34 @@
+{
+  "settings": {
+    "probe_interval_s": 0.5,
+    "probe_timeout_s": 2.0,
+    "baseline_timeout_s": 30,
+    "inject_timeout_s": 60,
+    "final_wait_s": 20
+  },
+  "experiments": {
+    "kill-process": {
+      "description": "Kill the app process; the local supervisor must restart it",
+      "inject": "{python} scripts/local_chaos.py kill",
+      "probe_path": "/health",
+      "observe_s": 20,
+      "expect": "restart",
+      "thresholds": { "max_recovery_s": 15, "must_end_healthy": true }
+    },
+    "cpu-spike": {
+      "description": "Busy-loop every CPU core for 15 s; the app must keep answering in time",
+      "inject": "{python} scripts/local_chaos.py cpu --duration 15",
+      "probe_path": "/api/quote",
+      "observe_s": 18,
+      "thresholds": { "min_availability_pct": 95, "max_p95_latency_ms": 1500, "must_end_healthy": true }
+    },
+    "network-failure": {
+      "description": "Black-hole the quote dependency for 12 s; the app must degrade gracefully",
+      "inject": "{python} scripts/local_chaos.py network --duration 12",
+      "probe_path": "/api/quote",
+      "observe_s": 16,
+      "expect": "degraded",
+      "thresholds": { "min_availability_pct": 95, "must_end_healthy": true }
+    }
+  }
+}

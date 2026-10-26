@@ -1,0 +1,29 @@
+# Rewrites an instance's environment and unit, restarts it and waits until it is healthy.
+# Used by rollback, where the jar is already in place. Needs: instance_name, instance_port.
+- name: Write environment for {{ instance_name }}
+  ansible.builtin.template:
+    src: app.env.j2
+    dest: "{{ app_root }}/{{ instance_name }}/app.env"
+    owner: "{{ app_user }}"
+    mode: "0644"
+
+- name: Install the instance systemd unit
+  ansible.builtin.template:
+    src: resilienceops@.service.j2
+    dest: /etc/systemd/system/resilienceops@.service
+    mode: "0644"
+
+- name: Restart resilienceops@{{ instance_name }}
+  ansible.builtin.systemd:
+    name: "resilienceops@{{ instance_name }}"
+    state: restarted
+    enabled: true
+    daemon_reload: true
+
+- name: Wait until {{ instance_name }} is healthy
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ instance_port }}/health"
+  register: instance_health
+  until: instance_health.status == 200
+  retries: "{{ health_retries }}"
+  delay: "{{ health_delay }}"

@@ -1,0 +1,19 @@
+# Chaos experiment: saturate the CPU.
+# Expected resilient behaviour: the app keeps answering within the latency limit.
+- name: "Chaos: CPU spike"
+  hosts: staging
+  become: true
+  vars:
+    cpu_workers: 0      # 0 = one worker per CPU core
+    cpu_load: 100       # percent load per worker
+  tasks:
+    - name: Run stress-ng for {{ chaos_duration }} seconds
+      ansible.builtin.command: >-
+        stress-ng --cpu {{ cpu_workers }} --cpu-load {{ cpu_load }}
+        --timeout {{ chaos_duration }}s --metrics-brief
+      register: stress
+      changed_when: true
+
+    - name: Report
+      ansible.builtin.debug:
+        var: stress.stderr_lines

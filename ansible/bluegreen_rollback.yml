@@ -1,0 +1,68 @@
+# Automatic production rollback: switch nginx back to the previous slot, which is still running.
+- name: Roll production back to the previous slot
+  hosts: production
+  become: true
+  tasks:
+    - name: Read the previous slot
+      ansible.builtin.slurp:
+        src: "{{ app_root }}/previous_color"
+      register: previous_file
+      failed_when: false
+
+    - name: Stop if there is no previous slot
+      ansible.builtin.fail:
+        msg: "No previous slot recorded (first release); nothing to roll back to."
+      when: previous_file.content is not defined
+
+    - name: Read the active slot
+      ansible.builtin.slurp:
+        src: "{{ app_root }}/active_color"
+      register: active_file
+
+    - name: Work out the slots
+      ansible.builtin.set_fact:
+        rollback_to: "{{ previous_file.content | b64decode | trim }}"
+        rolling_back_from: "{{ active_file.content | b64decode | trim }}"
+
+    - name: Make sure the previous slot is running
+      ansible.builtin.systemd:
+        name: "resilienceops@{{ rollback_to }}"
+        state: started
+
+    - name: Wait until the previous slot is healthy
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ slot_ports[rollback_to] }}/health"
+      register: previous_health
+      until: previous_health.status == 200
+      retries: "{{ health_retries }}"
+      delay: "{{ health_delay }}"
+
+    - name: Point nginx back at the previous slot
+      ansible.builtin.template:
+        src: active_upstream.conf.j2
+        dest: "{{ app_root }}/nginx/active_upstream.conf"
+        mode: "0644"
+      vars:
+        switch_to_color: "{{ rollback_to }}"
+
+    - name: Validate nginx configuration
+      ansible.builtin.command: nginx -t
+      changed_when: false
+
+    - name: Reload nginx
+      ansible.builtin.systemd:
+        name: nginx
+        state: reloaded
+
+    - name: Swap the active and previous markers
+      ansible.builtin.copy:
+        content: "{{ item.value }}\n"
+        dest: "{{ app_root }}/{{ item.file }}"
+        mode: "0644"
+      loop:
+        - { file: active_color, value: "{{ rollback_to }}" }
+        - { file: previous_color, value: "{{ rolling_back_from }}" }
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: "Production traffic rolled back from {{ rolling_back_from }} to {{ rollback_to }}."

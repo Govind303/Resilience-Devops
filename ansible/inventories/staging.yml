@@ -1,0 +1,9 @@
+# Staging: one Ubuntu VM where the app is deployed and chaos experiments run.
+# Defaults match the Vagrant box in ../../Vagrantfile; override with STAGING_HOST / STAGING_USER.
+all:
+  children:
+    staging:
+      hosts:
+        staging-vm:
+          ansible_host: "{{ lookup('env', 'STAGING_HOST') | default('192.168.56.10', true) }}"
+          ansible_user: "{{ lookup('env', 'STAGING_USER') | default('vagrant', true) }}"

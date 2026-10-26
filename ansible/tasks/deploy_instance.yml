@@ -1,0 +1,44 @@
+# Deploys the jar to one instance (staging, blue or green) and waits until it is healthy.
+# Needs: instance_name, instance_port.
+- name: Create directory for {{ instance_name }}
+  ansible.builtin.file:
+    path: "{{ app_root }}/{{ instance_name }}"
+    state: directory
+    owner: "{{ app_user }}"
+    mode: "0755"
+
+- name: Upload application jar ({{ app_version }})
+  ansible.builtin.copy:
+    src: "{{ app_jar_local }}"
+    dest: "{{ app_root }}/{{ instance_name }}/app.jar"
+    owner: "{{ app_user }}"
+    mode: "0644"
+
+- name: Write environment for {{ instance_name }}
+  ansible.builtin.template:
+    src: app.env.j2
+    dest: "{{ app_root }}/{{ instance_name }}/app.env"
+    owner: "{{ app_user }}"
+    mode: "0644"
+
+- name: Install the instance systemd unit
+  ansible.builtin.template:
+    src: resilienceops@.service.j2
+    dest: /etc/systemd/system/resilienceops@.service
+    mode: "0644"
+
+- name: Restart resilienceops@{{ instance_name }}
+  ansible.builtin.systemd:
+    name: "resilienceops@{{ instance_name }}"
+    state: restarted
+    enabled: true
+    daemon_reload: true
+
+- name: Wait until {{ instance_name }} is healthy
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ instance_port }}/health"
+    return_content: true
+  register: instance_health
+  until: instance_health.status == 200 and instance_health.json.version == app_version
+  retries: "{{ health_retries }}"
+  delay: "{{ health_delay }}"

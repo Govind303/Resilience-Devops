@@ -1,0 +1,10 @@
+# Deploys the freshly built jar to staging, where the chaos gate will test it.
+- name: Deploy to staging
+  hosts: staging
+  become: true
+  vars:
+    instance_name: staging
+    instance_port: "{{ staging_port }}"
+  tasks:
+    - name: Deploy the staging instance
+      ansible.builtin.include_tasks: tasks/deploy_instance.yml

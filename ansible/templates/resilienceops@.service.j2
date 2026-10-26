@@ -1,0 +1,18 @@
+# Managed by Ansible. One unit per instance: resilienceops@staging, resilienceops@blue, resilienceops@green.
+[Unit]
+Description=ResilienceOps app (%i)
+After=network-online.target resilienceops-quote.service
+StartLimitIntervalSec=120
+StartLimitBurst=20
+
+[Service]
+User={{ app_user }}
+EnvironmentFile={{ app_root }}/%i/app.env
+ExecStart=/usr/bin/java -Xmx256m -jar {{ app_root }}/%i/app.jar
+# Self-healing: systemd restarts the process whenever it dies, including after a SIGKILL.
+Restart={{ 'always' if self_healing_enabled | bool else 'no' }}
+RestartSec=2
+SuccessExitStatus=143
+
+[Install]
+WantedBy=multi-user.target

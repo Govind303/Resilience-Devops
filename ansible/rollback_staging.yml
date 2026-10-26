@@ -1,0 +1,35 @@
+# Automatic rollback: when the gate fails, put the last known-good build back on staging.
+- name: Roll staging back to the last known-good build
+  hosts: staging
+  become: true
+  tasks:
+    - name: Look for a known-good build
+      ansible.builtin.stat:
+        path: "{{ app_root }}/staging/last-good.jar"
+      register: last_good
+
+    - name: Stop if there is nothing to roll back to
+      ansible.builtin.fail:
+        msg: "No known-good build on staging yet (first deployment); nothing to roll back to."
+      when: not last_good.stat.exists
+
+    - name: Read the known-good version
+      ansible.builtin.slurp:
+        src: "{{ app_root }}/staging/last-good.version"
+      register: good_version
+
+    - name: Restore the known-good jar
+      ansible.builtin.copy:
+        src: "{{ app_root }}/staging/last-good.jar"
+        dest: "{{ app_root }}/staging/app.jar"
+        remote_src: true
+        owner: "{{ app_user }}"
+        mode: "0644"
+
+    - name: Restore a self-healing configuration
+      ansible.builtin.include_tasks: tasks/restore_env.yml
+      vars:
+        instance_name: staging
+        instance_port: "{{ staging_port }}"
+        app_version: "{{ good_version.content | b64decode | trim }}"
+        self_healing_enabled: true

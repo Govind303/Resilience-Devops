@@ -1,0 +1,9 @@
+app/target/
+reports/
+.demo/
+.vagrant/
+__pycache__/
+*.pyc
+.idea/
+.vscode/
+*.iml

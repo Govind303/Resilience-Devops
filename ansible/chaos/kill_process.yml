@@ -1,0 +1,24 @@
+# Chaos experiment: kill the app with SIGKILL (no chance to shut down cleanly).
+# Expected resilient behaviour: systemd restarts it within seconds (Restart=always).
+- name: "Chaos: kill the application process"
+  hosts: staging
+  become: true
+  vars:
+    target_unit: resilienceops@staging
+  tasks:
+    - name: Find the app's process ID
+      ansible.builtin.command: systemctl show -p MainPID --value {{ target_unit }}
+      register: main_pid
+      changed_when: false
+
+    - name: Make sure the app is running before we kill it
+      ansible.builtin.assert:
+        that: main_pid.stdout | int > 0
+        fail_msg: "{{ target_unit }} is not running, so there is nothing to kill"
+
+    - name: Kill it
+      ansible.builtin.command: kill -9 {{ main_pid.stdout }}
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: "Sent SIGKILL to PID {{ main_pid.stdout }} ({{ target_unit }})"

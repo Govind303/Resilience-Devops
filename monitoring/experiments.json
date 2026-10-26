@@ -1,0 +1,34 @@
+{
+  "settings": {
+    "probe_interval_s": 0.5,
+    "probe_timeout_s": 2.0,
+    "baseline_timeout_s": 30,
+    "inject_timeout_s": 120,
+    "final_wait_s": 30
+  },
+  "experiments": {
+    "kill-process": {
+      "description": "Kill the app process with SIGKILL; systemd must restart it",
+      "inject": "ansible-playbook -i {inventory} ansible/chaos/kill_process.yml",
+      "probe_path": "/health",
+      "observe_s": 40,
+      "expect": "restart",
+      "thresholds": { "max_recovery_s": 20, "must_end_healthy": true }
+    },
+    "cpu-spike": {
+      "description": "Saturate every CPU core for 30 s; the app must keep answering in time",
+      "inject": "ansible-playbook -i {inventory} ansible/chaos/cpu_spike.yml -e chaos_duration=30",
+      "probe_path": "/api/quote",
+      "observe_s": 35,
+      "thresholds": { "min_availability_pct": 95, "max_p95_latency_ms": 1500, "must_end_healthy": true }
+    },
+    "network-failure": {
+      "description": "Drop all traffic to the quote dependency for 20 s; the app must degrade gracefully",
+      "inject": "ansible-playbook -i {inventory} ansible/chaos/network_failure.yml -e chaos_duration=20",
+      "probe_path": "/api/quote",
+      "observe_s": 30,
+      "expect": "degraded",
+      "thresholds": { "min_availability_pct": 95, "must_end_healthy": true }
+    }
+  }
+}

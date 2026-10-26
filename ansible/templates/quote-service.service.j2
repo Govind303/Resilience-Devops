@@ -1,0 +1,13 @@
+# Managed by Ansible. Downstream dependency of the app.
+[Unit]
+Description=ResilienceOps quote service (downstream dependency)
+After=network-online.target
+
+[Service]
+User={{ app_user }}
+ExecStart=/usr/bin/python3 {{ app_root }}/quote_service.py --port {{ downstream_port }}
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,133 @@
+# ResilienceOps continuous delivery: blue-green release to the production Azure VM.
+# Started by Jenkins (scripts/trigger_azure_release.py) only after a build passes the chaos gate.
+#
+# Azure DevOps setup:
+#   Variable group "resilienceops-production": PROD_HOST, PROD_USER, ALERT_WEBHOOK_URL (secret, optional)
+#   Secure file "resilienceops_prod_key": SSH private key for PROD_USER on the VM
+#   Environment "resilienceops-production" (add an approval check here if you want a manual gate)
+
+trigger: none
+pr: none
+
+parameters:
+  - name: appVersion
+    displayName: Version that passed the chaos gate
+    type: string
+    default: manual
+  - name: sourceCommit
+    displayName: Commit built by Jenkins
+    type: string
+    default: ''
+
+variables:
+  - group: resilienceops-production
+  - name: ANSIBLE_CONFIG
+    value: $(Build.SourcesDirectory)/ansible/ansible.cfg
+
+pool:
+  vmImage: ubuntu-latest
+
+stages:
+  - stage: Build
+    displayName: Build release artifact
+    jobs:
+      - job: Package
+        steps:
+          - script: echo "Releasing ${{ parameters.appVersion }} from commit ${{ parameters.sourceCommit }}"
+            displayName: Release info
+
+          - task: Maven@4
+            displayName: Build and test
+            inputs:
+              mavenPomFile: app/pom.xml
+              goals: clean verify
+              options: -B
+              javaHomeOption: JDKVersion
+              jdkVersionOption: '1.17'
+              publishJUnitResults: true
+              testResultsFiles: '**/surefire-reports/TEST-*.xml'
+
+          - publish: app/target/resilienceops-app.jar
+            artifact: app-jar
+            displayName: Publish jar
+
+  - stage: BlueGreen
+    displayName: Blue-green deploy to production
+    dependsOn: Build
+    jobs:
+      - deployment: Production
+        environment: resilienceops-production
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - download: current
+                  artifact: app-jar
+
+                - script: |
+                    mkdir -p app/target
+                    cp "$(Pipeline.Workspace)/app-jar/resilienceops-app.jar" app/target/
+                  displayName: Stage the jar for Ansible
+
+                - task: DownloadSecureFile@1
+                  name: sshKey
+                  displayName: Download production SSH key
+                  inputs:
+                    secureFile: resilienceops_prod_key
+
+                - script: |
+                    chmod 600 "$(sshKey.secureFilePath)"
+                    python3 -m pip install --user --quiet ansible-core
+                    echo "##vso[task.prependpath]$HOME/.local/bin"
+                  displayName: Install Ansible
+
+                - script: >-
+                    ansible-playbook -i ansible/inventories/production.yml ansible/provision.yml
+                    --private-key "$(sshKey.secureFilePath)"
+                  displayName: Provision production VM (idempotent)
+                  env:
+                    PROD_HOST: $(PROD_HOST)
+                    PROD_USER: $(PROD_USER)
+
+                - script: >-
+                    ansible-playbook -i ansible/inventories/production.yml ansible/bluegreen_deploy.yml
+                    --private-key "$(sshKey.secureFilePath)"
+                  displayName: Deploy to idle slot and switch traffic
+                  env:
+                    APP_VERSION: ${{ parameters.appVersion }}
+                    PROD_HOST: $(PROD_HOST)
+                    PROD_USER: $(PROD_USER)
+
+                - script: python3 scripts/verify_production.py --url "http://$(PROD_HOST)" --expect-version "${{ parameters.appVersion }}"
+                  displayName: Verify live traffic
+
+                - script: >-
+                    ansible-playbook -i ansible/inventories/production.yml ansible/bluegreen_rollback.yml
+                    --private-key "$(sshKey.secureFilePath)"
+                  displayName: Automatic rollback
+                  condition: failed()
+                  env:
+                    PROD_HOST: $(PROD_HOST)
+                    PROD_USER: $(PROD_USER)
+
+                - script: >-
+                    python3 scripts/alert.py --severity critical
+                    --title "ResilienceOps ${{ parameters.appVersion }} release failed"
+                    --message "Production verification failed; traffic was switched back to the previous slot."
+                    --link "$(System.CollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)"
+                  displayName: Alert on failure
+                  condition: failed()
+                  env:
+                    ALERT_WEBHOOK_URL: $(ALERT_WEBHOOK_URL)
+
+                - script: >-
+                    python3 scripts/alert.py --severity info
+                    --title "ResilienceOps ${{ parameters.appVersion }} is live"
+                    --message "Blue-green release completed and verified."
+                    --link "$(System.CollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)"
+                  displayName: Notify success
+                  condition: succeeded()
+                  env:
+                    ALERT_WEBHOOK_URL: $(ALERT_WEBHOOK_URL)

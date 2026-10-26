@@ -1,0 +1,22 @@
+app_user: resilienceops
+app_root: /opt/resilienceops
+
+# Paths on the machine running Ansible (Jenkins agent or Azure Pipelines agent).
+app_jar_local: "{{ inventory_dir }}/../../app/target/resilienceops-app.jar"
+quote_service_local: "{{ inventory_dir }}/../../downstream/quote_service.py"
+
+app_version: "{{ lookup('env', 'APP_VERSION') | default('dev', true) }}"
+
+# true:  systemd restarts the app (Restart=always) and the app degrades gracefully.
+# false: no restart, no fallback. Use it to show the chaos gate catching a fragile build.
+self_healing_enabled: true
+
+downstream_port: 9090
+staging_port: 8080
+slot_ports:
+  blue: 8081
+  green: 8082
+
+health_retries: 20
+health_delay: 3
+chaos_duration: 20
