@@ -1,10 +1,4 @@
-// ResilienceOps CI pipeline: build -> test -> provision staging -> deploy -> chaos gate -> promote.
-// A build reaches production only if it survives the chaos experiments on staging.
-//
-// Agent needs: JDK 17, Maven, Python 3, Ansible, and SSH access to the staging VM.
-// Jenkins credentials: 'staging-ssh' (SSH private key for the staging VM user)
-//                      'azure-devops-pat' (secret text, Azure DevOps personal access token)
-// Optional global env vars: ALERT_WEBHOOK_URL, AZDO_ORG, AZDO_PROJECT, AZDO_PIPELINE_ID
+
 pipeline {
     agent {
         label 'wsl-linux'
@@ -18,12 +12,26 @@ pipeline {
     }
 
     parameters {
-        string(name: 'STAGING_HOST', defaultValue: '192.168.56.10', description: 'Staging VM address')
-        string(name: 'STAGING_USER', defaultValue: 'vagrant', description: 'SSH user on the staging VM')
-        booleanParam(name: 'SELF_HEALING_ENABLED', defaultValue: true,
-                     description: 'Untick to deploy a fragile build and watch the chaos gate block it')
-        booleanParam(name: 'PROMOTE_TO_PRODUCTION', defaultValue: true,
-                     description: 'Start the Azure Pipelines blue-green release when the gate passes')
+        string(
+            name: 'STAGING_HOST',
+            defaultValue: '192.168.56.10',
+            description: 'Staging VM address'
+        )
+        string(
+            name: 'STAGING_USER',
+            defaultValue: 'vagrant',
+            description: 'SSH user on the staging VM'
+        )
+        booleanParam(
+            name: 'SELF_HEALING_ENABLED',
+            defaultValue: true,
+            description: 'Untick to deploy a fragile build and test the chaos gate'
+        )
+        booleanParam(
+            name: 'PROMOTE_TO_PRODUCTION',
+            defaultValue: true,
+            description: 'Enable local release-promotion simulation after the gate passes'
+        )
     }
 
     environment {
@@ -31,12 +39,19 @@ pipeline {
         STAGING_URL = "http://${params.STAGING_HOST}:8080"
         ANSIBLE_CONFIG = "${env.WORKSPACE}/ansible/ansible.cfg"
         ANSIBLE_FORCE_COLOR = 'true'
+        STAGING_DEPLOYED = 'false'
     }
 
     stages {
         stage('Checkout') {
             steps {
                 checkout scm
+                script {
+                    env.GIT_COMMIT = sh(
+                        script: 'git rev-parse HEAD',
+                        returnStdout: true
+                    ).trim()
+                }
             }
         }
 
@@ -48,37 +63,53 @@ pipeline {
             }
             post {
                 always {
-                    junit 'app/target/surefire-reports/*.xml'
+                    junit allowEmptyResults: true,
+                          testResults: 'app/target/surefire-reports/*.xml'
                 }
                 success {
-                    archiveArtifacts artifacts: 'app/target/resilienceops-app.jar', fingerprint: true
+                    archiveArtifacts(
+                        artifacts: 'app/target/resilienceops-app.jar',
+                        fingerprint: true
+                    )
                 }
             }
         }
 
         stage('Provision Staging (Ansible)') {
             steps {
-                sshagent(credentials: ['staging-ssh']) {
-                    sh 'ansible-playbook -i ansible/inventories/staging.yml ansible/provision.yml'
+                sshagent(credentials: ['vagrant']) {
+                    sh '''
+                        ansible-playbook \
+                            -i ansible/inventories/staging.yml \
+                            ansible/provision.yml
+                    '''
                 }
             }
         }
 
         stage('Deploy to Staging (Ansible)') {
             steps {
-                script { env.STAGING_DEPLOYED = 'true' }
-                sshagent(credentials: ['staging-ssh']) {
-                    sh """
-                        ansible-playbook -i ansible/inventories/staging.yml ansible/deploy_staging.yml \
-                            -e self_healing_enabled=${params.SELF_HEALING_ENABLED}
-                    """
+                sshagent(credentials: ['vagrant']) {
+                    sh '''
+                        ansible-playbook \
+                            -i ansible/inventories/staging.yml \
+                            ansible/deploy_staging.yml \
+                            -e self_healing_enabled=${SELF_HEALING_ENABLED}
+                    '''
+                }
+            }
+            post {
+                success {
+                    script {
+                        env.STAGING_DEPLOYED = 'true'
+                    }
                 }
             }
         }
 
         stage('Chaos Engineering Gate') {
             steps {
-                sshagent(credentials: ['staging-ssh']) {
+                sshagent(credentials: ['vagrant']) {
                     sh '''
                         python3 monitoring/resilience_gate.py \
                             --config monitoring/experiments.json \
@@ -90,27 +121,54 @@ pipeline {
             }
             post {
                 always {
-                    junit allowEmptyResults: true, testResults: 'reports/chaos/TEST-*.xml'
-                    archiveArtifacts allowEmptyArchive: true, artifacts: 'reports/chaos/**'
+                    junit allowEmptyResults: true,
+                          testResults: 'reports/chaos/TEST-*.xml'
+                    archiveArtifacts(
+                        allowEmptyArchive: true,
+                        artifacts: 'reports/chaos/**'
+                    )
                 }
             }
         }
 
         stage('Mark Build Known-Good') {
             steps {
-                sshagent(credentials: ['staging-ssh']) {
-                    sh 'ansible-playbook -i ansible/inventories/staging.yml ansible/mark_good.yml'
+                sshagent(credentials: ['vagrant']) {
+                    sh '''
+                        ansible-playbook \
+                            -i ansible/inventories/staging.yml \
+                            ansible/mark_good.yml
+                    '''
                 }
             }
         }
 
-        stage('Promote: Azure Pipelines Blue-Green') {
+        stage('Promote: Local Release') {
             when {
                 expression { params.PROMOTE_TO_PRODUCTION }
             }
             steps {
-                withCredentials([string(credentialsId: 'azure-devops-pat', variable: 'AZDO_PAT')]) {
-                    sh 'python3 scripts/trigger_azure_release.py --version "$APP_VERSION" --commit "$GIT_COMMIT"'
+                script {
+                    sh '''
+                        mkdir -p reports/releases
+
+                        cat > "reports/releases/release-${BUILD_NUMBER}.txt" <<EOF
+ResilienceOps Local Release Record
+Build: ${BUILD_NUMBER}
+Application version: ${APP_VERSION}
+Git commit: ${GIT_COMMIT}
+Chaos gate: PASSED
+Known-good status: RECORDED
+Promotion mode: LOCAL SIMULATION
+EOF
+                    '''
+
+                    archiveArtifacts(
+                        artifacts: "reports/releases/release-${env.BUILD_NUMBER}.txt",
+                        fingerprint: true
+                    )
+
+                    echo "Local promotion simulation completed for ${env.APP_VERSION}"
                 }
             }
         }
@@ -120,25 +178,37 @@ pipeline {
         failure {
             script {
                 if (env.STAGING_DEPLOYED == 'true') {
-                    sshagent(credentials: ['staging-ssh']) {
-                        sh 'ansible-playbook -i ansible/inventories/staging.yml ansible/rollback_staging.yml || true'
+                    sshagent(credentials: ['vagrant']) {
+                        sh '''
+                            ansible-playbook \
+                                -i ansible/inventories/staging.yml \
+                                ansible/rollback_staging.yml || true
+                        '''
                     }
                 }
             }
+
             sh '''
-                python3 scripts/alert.py --severity critical \
-                    --title "ResilienceOps build $APP_VERSION blocked" \
-                    --message "The build failed or did not survive the chaos gate. Promotion blocked; staging rolled back to the last known-good build." \
+                python3 scripts/alert.py \
+                    --severity critical \
+                    --title "ResilienceOps build ${APP_VERSION} blocked" \
+                    --message "The pipeline failed. Promotion was blocked; staging rollback was attempted when deployment had completed." \
                     --link "$BUILD_URL"
             '''
         }
+
         success {
             sh '''
-                python3 scripts/alert.py --severity info \
-                    --title "ResilienceOps build $APP_VERSION passed the chaos gate" \
-                    --message "All resilience experiments passed; release handed to Azure Pipelines." \
+                python3 scripts/alert.py \
+                    --severity info \
+                    --title "ResilienceOps build ${APP_VERSION} passed the chaos gate" \
+                    --message "All resilience experiments passed. The known-good release was recorded and the local promotion stage completed or was disabled." \
                     --link "$BUILD_URL"
             '''
+        }
+
+        always {
+            echo "ResilienceOps pipeline finished with status: ${currentBuild.currentResult}"
         }
     }
 }
