@@ -1,9 +1,13 @@
 # Staging: one Ubuntu VM where the app is deployed and chaos experiments run.
 # Defaults match the Vagrant box in ../../Vagrantfile; override with STAGING_HOST / STAGING_USER.
+
 all:
   children:
     staging:
       hosts:
         staging-vm:
-          ansible_host: "{{ lookup('env', 'STAGING_HOST') | default('192.168.56.10', true) }}"
-          ansible_user: "{{ lookup('env', 'STAGING_USER') | default('vagrant', true) }}"
+          ansible_host: 172.25.112.1
+          ansible_port: 2222
+          ansible_user: vagrant
+          ansible_ssh_private_key_file: /home/govind/.ssh/vagrant.key.rsa
+          ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o IdentitiesOnly=yes'
